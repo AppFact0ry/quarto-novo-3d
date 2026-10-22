@@ -142,6 +142,12 @@ details.adj[open] summary::after{content:"\2212"}
 .btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 .note{font-size:13px;color:var(--ink-3);margin:12px 2px 0}
 .note strong{color:var(--ink-2)}
+.sizes{display:flex;flex-wrap:wrap;gap:6px}
+.size{appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:6px 12px;font-weight:700;font-size:13px;cursor:pointer;min-height:34px;font-variant-numeric:tabular-nums}
+.size:hover{border-color:var(--ink-3)}
+.size[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.tvfit{font-size:13px;color:var(--ink-2);margin:10px 0 0}
+.tvfit.bad{color:var(--danger);font-weight:700}
 .credit{font-size:12px}
 .credit a{color:var(--ink-2)}
 .srh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
@@ -222,6 +228,12 @@ details.adj[open] summary::after{content:"\2212"}
         <p class="desc" id="l-desc"></p>
         <div class="palette" id="l-pal" aria-hidden="true"></div>
         <ul class="hl" id="l-hl"></ul>
+      </div>
+      <div class="card" id="tv-card" hidden>
+        <h3 class="sec">Tamanho da TV</h3>
+        <div class="sizes" id="tv-sizes" role="group" aria-label="Tamanho da TV em polegadas"></div>
+        <p class="tvfit" id="tv-fit"></p>
+        <p class="sub">A escolha vale para todos os layouts e fica salva neste navegador.</p>
       </div>
       <div class="card">
         <h3 class="sec">Dicas</h3>
@@ -556,7 +568,7 @@ details.adj[open] summary::after{content:"\2212"}
    "#3b3e44"
   ],
   "highlights": [
-   "TV de 70\" na parede azul, o maior tamanho que cabe sem bater na porta nem no interruptor",
+   "TV de 70\" na parede azul, com folga até o batente do banheiro e o interruptor",
    "Setup no nicho: ultrawide de 49\" num braço, dock, MacBook em pé e prateleiras com o kit do Avata 2",
    "Cômoda de 3 gavetas no estilo da mesa, na frente da janela, guarda a roupa e tira tudo da cadeira"
   ],
@@ -3660,7 +3672,7 @@ function placeItem(it) {
   let h = it.h;
   if (it.type === 'curtain' && h > R0.H * 0.8) h = Math.max(0.5, h + (DIM.H - R0.H));
   if (it.type === 'wardrobe' || it.type === 'bookcase') h = Math.min(h, DIM.H - 0.02);
-  return { x: ax(it.x0), z: az(it.z0), y: ceilAnch ? DIM.H - (R0.H - it.y0) : it.y0, h };
+  return { x: it.xw != null ? it.xw : ax(it.x0), z: az(it.z0), y: ceilAnch ? DIM.H - (R0.H - it.y0) : it.y0, h };
 }
 
 /* builder helpers */
@@ -4815,6 +4827,7 @@ function buildItems() {
   CTX = { palette: LAYOUT.palette, screens: [], lamps: [], leds: [], plain: LAYOUT.id === 'hoje' };
   const G = SCENE_REFS.G;
   const list = effItems(LAYOUT); // published items with the viewer's edits applied
+  applyTvSize(list);
   const MM = LAYOUT.monitorModes, md = MM && MM.modes.find(m => m.id === state.monMode);
   if (md && md.x != null) { // a monitor-arm mode moves and turns the monitor; the clamp stays where the layout put it
     const k = list.findIndex(i => i.id === MM.item);
@@ -5278,6 +5291,81 @@ function renderTabs() {
     box.appendChild(b);
   });
 }
+/* TV size picker: the viewer tries other sizes on the navy wall. The TV stays at its height when it fits beside the
+   light switch, climbs above the switch when it only fits the whole wall, and the card says when it does not fit. */
+const TVKEY = 'quarto3d.tv.v1', TV_SIZES = [55, 65, 70, 75, 77, 83, 85];
+state.tvInches = null;
+try { const v = +localStorage.getItem(TVKEY); if (TV_SIZES.includes(v)) state.tvInches = v; } catch (e) { /* storage blocked */ }
+const fmtBr = (m) => m.toFixed(2).replace('.', ',') + ' m';
+const tvSize = (inch) => ({ w: inch * 0.0254 * 16 / Math.hypot(16, 9) + 0.012, h: inch * 0.0254 * 9 / Math.hypot(16, 9) + 0.012 }); // 16:9 panel + ~6 mm bezel
+function layoutTv(items) { return items.find(i => i.type === 'tv' && i.facing === 'grey') || null; }
+function tvInchesOf(it) { const m = /(\d{2,3})\s*"/.exec(it.label || ''); return m ? +m[1] : Math.round((it.w - 0.012) / (0.0254 * 16 / Math.hypot(16, 9))); }
+function fitTv(it, inch, keep = {}) {
+  // inch null = the layout's own TV where the layout put it. A chosen size is centered on its free run and climbs
+  // above the light switch when it only fits the whole wall, unless the viewer moved it in Editar (keep.x / keep.y).
+  // Free run on the navy wall, world x: bathroom casing -> light switch (TV at switch height) or -> entrance corner (above it)
+  const bath = (ROOM0.openings || []).find(o => o && o.id === 'bath_door'), sw = (ROOM0.outlets || []).find(o => o && o.wall === 'navy' && /switch/i.test(o.kind || ''));
+  const L = ax(num(bath && bath.x1, 1.71) + 0.07), C = ax(num(ROOM0.entranceBlock && ROOM0.entranceBlock.x0, R0.L - 0.64) - 0.02);
+  const S = sw ? ax(num(sw.x, 3.56) - 0.0375) : C, swTop = sw ? num(sw.y, 1.1) + 0.06 : 0;
+  const own = !inch, { w, h } = own ? it : tvSize(inch);
+  let y0 = it.y0;
+  if (!own && !keep.y && y0 < swTop && w + 0.01 > S - L) y0 = swTop + 0.04;
+  const high = y0 >= swTop, R = high ? C : S;
+  const xw = own || keep.x ? ax(it.x0) : (L + R) / 2, left = xw - w / 2 - L, right = R - xw - w / 2;
+  let mode = !high ? 'beside' : y0 !== it.y0 ? 'raised' : 'above';
+  if (own || keep.x) { if (left < -0.005 || right < -0.005) mode = 'overlap'; }
+  else if (w + 0.01 > R - L) mode = 'nofit';
+  if (y0 + h > DIM.H - 0.02) mode = 'ceiling';
+  return { w, h, y0, xw, x0: rawX(xw), mode, left, right, run: R - L, high };
+}
+function tvChoice(tv) { return state.tvInches && state.tvInches !== tvInchesOf(tv) ? state.tvInches : null; } // the layout's own size counts as "do layout"
+function tvPrice(inch) { for (const l of LAYOUTS) for (const i of l.items) if (i.type === 'tv' && tvInchesOf(i) === inch && i.price) return i.price; return 0; }
+function applyTvSize(list) {
+  const k = list.findIndex(i => i.type === 'tv' && i.facing === 'grey'); if (k < 0) return;
+  const tv = list[k], inch = tvChoice(tv); if (!inch) return;
+  const ov = editsFor(LAYOUT.id)[tv.id] || {}, f = fitTv(tv, inch, { x: ov.x != null, y: ov.y != null });
+  list[k] = { ...tv, x0: f.x0, xw: f.xw, y0: f.y0, w: f.w, h: f.h, label: `Smart TV ${inch}" 4K`, price: tvPrice(inch) };
+  // the wall-wash LED glued to the back of the TV follows it
+  const j = list.findIndex(i => i.type === 'led_strip' && i.variant === 'wall_wash' && i.facing === 'grey');
+  if (j >= 0) list[j] = { ...list[j], x0: f.x0, xw: f.xw, y0: f.y0 + f.h / 2, w: f.w * 0.9 };
+}
+function tvFitText(it, inch, keep) {
+  const f = fitTv(it, inch, keep), n = (v) => Math.max(1, Math.round(v * 100)), head = `${inch || tvInchesOf(it)}": ${fmtBr(f.w)} de largura. `;
+  const sobra = (v) => v < 0.015 ? 'menos de 2 cm' : `cerca de ${n(v)} cm`, far = f.high ? 'o canto da porta' : 'o interruptor';
+  if (f.mode === 'ceiling') return { bad: true, text: head + 'Acima do interruptor ela encostaria no teto: não cabe com este pé-direito.' };
+  if (f.mode === 'nofit') return { bad: true, text: head + (f.w <= f.run
+    ? `Fica sem folga: sobra menos de 1 cm nos ${fmtBr(f.run)} livres da parede azul. Meça com trena antes de comprar.`
+    : `Não cabe na parede azul: passa ${sobra(f.w - f.run).replace('cerca de', 'uns')} dos ${fmtBr(f.run)} livres.`) };
+  if (f.mode === 'overlap') return { bad: true, text: head + `Do jeito que está, ela passa ${sobra(-Math.min(f.left, f.right))} por cima ${f.left < f.right ? 'do batente do banheiro' : f.high ? 'do canto da porta' : 'do interruptor'}.` };
+  const gaps = Math.abs(f.left - f.right) < 0.015 ? `${sobra(f.left)} de cada lado` : `${sobra(f.left)} até o batente do banheiro e ${sobra(f.right)} até ${far}`;
+  const tight = Math.min(f.left, f.right) < 0.02 ? ' Folga pequena: meça a parede com trena antes de comprar.' : '';
+  if (f.mode === 'beside') return { bad: false, text: head + `Cabe ao lado do interruptor, com ${gaps}.` + tight };
+  if (f.mode === 'raised') return { bad: false, text: head + `Não cabe ao lado do interruptor, então fica acima dele, com a borda de baixo a ${fmtBr(f.y0)} do chão e ${gaps}.` + tight };
+  return { bad: false, text: head + `Fica acima do interruptor, com ${gaps}.` + tight };
+}
+function renderTvCard() {
+  const card = $('tv-card'), tv = layoutTv(effItems(LAYOUT));
+  card.hidden = !tv; if (!tv) return;
+  const own = tvInchesOf(tv), inch = tvChoice(tv), box = $('tv-sizes');
+  const focused = box.contains(document.activeElement) ? document.activeElement.dataset.v : null; // keep keyboard focus across rebuilds
+  box.replaceChildren();
+  const opts = [{ v: null, t: `${own}" (do layout)` }, ...TV_SIZES.filter(n => n !== own).map(n => ({ v: n, t: n + '"' }))];
+  for (const o of opts) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'size'; b.textContent = o.t; b.dataset.v = String(o.v || 'layout');
+    b.setAttribute('aria-pressed', String(inch === o.v));
+    b.addEventListener('click', () => {
+      state.tvInches = o.v;
+      try { if (o.v) localStorage.setItem(TVKEY, String(o.v)); else localStorage.removeItem(TVKEY); } catch (e) { /* storage blocked */ }
+      if (HAS3D) rebuildKeepSel(); else renderTvCard();
+      $('tv-sizes').querySelector(`[data-v="${b.dataset.v}"]`)?.focus();
+      $('live').textContent = $('tv-fit').textContent;
+    });
+    box.appendChild(b);
+  }
+  if (focused) box.querySelector(`[data-v="${focused}"]`)?.focus();
+  const ov = editsFor(LAYOUT.id)[tv.id] || {}, r = tvFitText(tv, inch, { x: ov.x != null, y: ov.y != null }), p = $('tv-fit');
+  p.textContent = r.text; p.classList.toggle('bad', r.bad);
+}
 function renderPanel() {
   const l = LAYOUT;
   $('l-name').textContent = l.name; $('l-tag').textContent = l.tagline; $('l-tag').hidden = !l.tagline;
@@ -5286,6 +5374,7 @@ function renderPanel() {
   const pal = $('l-pal'); pal.innerHTML = ''; pal.hidden = !l.palette.length; l.palette.forEach(c => { const s = document.createElement('span'); s.style.background = c; pal.appendChild(s); });
   const hl = $('l-hl'); hl.innerHTML = ''; l.highlights.forEach(h => { const li = document.createElement('li'); li.textContent = h; hl.appendChild(li); }); hl.hidden = !l.highlights.length;
   const tl = $('l-tips'); tl.innerHTML = ''; l.tips.forEach(t => { const li = document.createElement('li'); li.textContent = t; tl.appendChild(li); }); tl.closest('.card').hidden = !l.tips.length;
+  renderTvCard();
   renderNote();
 }
 function renderNote() {
